@@ -1,5 +1,5 @@
 /*
- * STASYS v0.1
+ * STASYS v0.2
  *
  * (Solar Tracking Alignment SYStem)
  *
@@ -7,14 +7,132 @@
  *
  */
 
-const string VERSION = "0.1";
+const string VERSION = "0.2";
 
 public List<IMyCubeGrid> local_grids = new List<IMyCubeGrid>();
+public List<IMyTerminalBlock> local_text_panels = new List<IMyTerminalBlock>();
+public List<STASYS_Group> stasys_groups = new List<STASYS_Group>();
+IMyTimerBlock local_timer = null;
 
 // state machine
 Action [] states = null;
 
 int current_state;
+
+public class STASYS_Group {
+ public string name;
+ private Dictionary<Vector3D, List<IMySolarPanel>> solar_panels;
+ private Dictionary<Vector3D, List<IMyOxygenFarm>> oxygen_farms;
+ private Dictionary<IMyCubeGrid, Vector3D> solar_grid_vectors;
+ private Dictionary<IMyCubeGrid, Vector3D> oxygen_grid_vectors;
+ private Dictionary<IMyCubeGrid, Vector3D> grid_to_rotor_vector;
+ private Dictionary<Vector3D, List<IMyMotorBase>> rotors;
+ bool large_grid;
+ public STASYS_Group() {
+  solar_panels = new Dictionary<Vector3D, List<IMySolarPanel>>();
+  oxygen_farms = new Dictionary<Vector3D, List<IMyOxygenFarm>>();
+  solar_grid_vectors = new Dictionary<IMyCubeGrid, Vector3D>();
+  oxygen_grid_vectors = new Dictionary<IMyCubeGrid, Vector3D>();
+  grid_to_rotor_vector = new Dictionary<IMyCubeGrid, Vector3D>();
+  rotors = new Dictionary<Vector3D, List<IMyMotorBase>>();
+  name = "";
+  large_grid = true;
+ }
+ private void add<T>(T b, Dictionary<Vector3D, List<T>> blocks,
+                     Dictionary<IMyCubeGrid, Vector3D> grid_vectors)
+                     where T : IMyTerminalBlock {
+  bool valid = false;
+  bool needs_grid = true;
+  var dir = Vector3D.Abs(b.WorldMatrix.Forward);
+  var grid = b.CubeGrid;
+  if (grid_vectors.ContainsKey(grid)) {
+   var other = grid_vectors[grid];
+   if (other == dir) {
+    valid = true;
+    needs_grid = false;
+   } else {
+    throw new Exception(b.CustomName + " is misaligned");
+   }
+  } else {
+   valid = true;
+  }
+  if (valid) {
+   if (!grid_to_rotor_vector.ContainsKey(grid)) {
+    throw new Exception(b.CustomName + " is not connected to a rotor");
+   }
+   var grid_vec = grid_to_rotor_vector[grid];
+   if (blocks.ContainsKey(grid_vec)) {
+    blocks[grid_vec].Add(b);
+   } else {
+    var list = new List<T>() {b};
+    blocks.Add(grid_vec, list);
+   }
+  }
+  if (needs_grid) {
+   grid_vectors.Add(grid, dir);
+  }
+ }
+ public void add(IMySolarPanel sp) {
+  add<IMySolarPanel>(sp, solar_panels, solar_grid_vectors);
+ }
+ public void add(IMyOxygenFarm of) {
+  add<IMyOxygenFarm>(of, oxygen_farms, oxygen_grid_vectors);
+ }
+ // adding rotors is an exception
+ public void add(IMyMotorBase mb, IMyCubeGrid connected_grid) {
+  var dir = Vector3D.Abs(mb.WorldMatrix.Up);
+  if (rotors.ContainsKey(dir)) {
+   rotors[dir].Add(mb);
+  } else if (rotors.Keys.Count == 2) {
+   throw new Exception(mb.CustomName + " is misaligned");
+  } else {
+   var list = new List<IMyMotorBase>() {mb};
+   rotors.Add(dir, list);
+  }
+  grid_to_rotor_vector.Add(connected_grid, dir);
+  large_grid = mb.BlockDefinition.ToString().Contains("Large");
+ }
+ public bool hasSolarPanels() {
+  foreach (var pair in solar_panels) {
+   foreach (var panel in pair.Value) {
+    return true;
+   }
+  }
+  return false;
+ }
+ public bool hasOxygenFarms() {
+  foreach (var pair in oxygen_farms) {
+   foreach (var farm in pair.Value) {
+    return true;
+   }
+  }
+  return false;
+ }
+ public float getSolarEfficiency() {
+  float cur = 0;
+  float total = 0;
+  foreach (var pair in solar_panels) {
+   foreach (var panel in pair.Value) {
+    float max = large_grid ? 0.120f : 0.30f;
+    total += max;
+    cur += panel.MaxOutput;
+   }
+  }
+  return total == 0 ? 0 : cur / total;
+ }
+ public float getOxygenEfficiency() {
+  float cur = 0;
+  float total = 0;
+  foreach (var pair in oxygen_farms) {
+   foreach (var farm in pair.Value) {
+    float max = 1.80f;
+    total += max;
+    cur += farm.GetOutput();
+   }
+  }
+  return total == 0 ? 0 : cur / total;
+ }
+}
 
 /*
  * Graph-based grid locality code transplanted from BARABAS.
@@ -296,6 +414,32 @@ List < IMyCubeGrid > getLocalGrids(bool force_update = false) {
  return local_grids;
 }
 
+public void filterLocalGrid(List < IMyTerminalBlock > blocks) {
+ var grids = getLocalGrids();
+ for (int i = blocks.Count - 1; i >= 0; i--) {
+  var block = blocks[i];
+  var grid = block.CubeGrid;
+  if (!grids.Contains(grid)) {
+   blocks.RemoveAt(i);
+  }
+ }
+}
+
+public void filterLocalGrid<T>(List < IMyTerminalBlock > blocks) {
+ var grids = getLocalGrids();
+ for (int i = blocks.Count - 1; i >= 0; i--) {
+  var block = blocks[i];
+  var grid = block.CubeGrid;
+  if (!grids.Contains(grid) || !(block is T)) {
+   blocks.RemoveAt(i);
+  }
+ }
+}
+
+/*
+ * Misc functions
+ */
+
 void showOnHud(IMyTerminalBlock b) {
  if (b.GetProperty("ShowOnHUD") != null) {
   b.SetValue("ShowOnHUD", true);
@@ -308,15 +452,132 @@ void hideFromHud(IMyTerminalBlock b) {
  }
 }
 
-public void filterLocalGrid(List < IMyTerminalBlock > blocks) {
- var grids = getLocalGrids();
+STASYS_Group parseBlockGroup(List<IMyTerminalBlock> blocks) {
+ // we have to get all rotors first
+ var g = new STASYS_Group();
  for (int i = blocks.Count - 1; i >= 0; i--) {
   var block = blocks[i];
-  var grid = block.CubeGrid;
-  if (!grids.Contains(grid)) {
+  showOnHud(block);
+  if (block is IMyMotorBase && !(block is IMyMotorSuspension)) {
+   var rotor = block as IMyMotorBase;
+   var grid = getConnectedGrid(rotor, getLocalGrids());
+   if (grid == null) {
+    throw new Exception(rotor.CustomName + " is not connected to anything");
+   }
+   g.add(rotor, grid);
    blocks.RemoveAt(i);
+   hideFromHud(block);
   }
  }
+ foreach (var block in blocks) {
+  showOnHud(block);
+  if (block is IMyOxygenFarm) {
+   g.add(block as IMyOxygenFarm);
+  } else if (block is IMySolarPanel) {
+   g.add(block as IMySolarPanel);
+  } else {
+   throw new Exception("Unexpected block: " + block.CustomName);
+  }
+  hideFromHud(block);
+ }
+ return g;
+}
+
+/*
+ * States
+ */
+
+void s_displayStats() {
+ if (local_text_panels.Count == 0) {
+  return;
+ }
+ var sb = new StringBuilder();
+ float o_e = 0f, s_e = 0f;
+ int o_n = 0, s_n = 0;
+ foreach (var g in stasys_groups) {
+  if (g.hasOxygenFarms()) {
+   o_n++;
+   o_e += g.getOxygenEfficiency();
+  }
+  if (g.hasSolarPanels()) {
+   s_n++;
+   s_e += g.getSolarEfficiency();
+  }
+ }
+ o_e /= o_n == 0 ? 1 : o_n;
+ s_e /= s_n == 0 ? 1 : s_n;
+
+ sb.AppendLine(String.Format("STASYS v{0}", VERSION));
+ sb.AppendLine(String.Format("Groups under control: {0}", stasys_groups.Count));
+ sb.AppendLine(String.Format("Dedicated timer: {0}", local_timer == null ? "no" : "yes"));
+ sb.Append("Oxygen farm efficiency: ");
+ if (o_n > 0) {
+  sb.AppendLine(String.Format("{0:0.0}%", o_e * 100f));
+ } else {
+  sb.AppendLine("N/A");
+ }
+ sb.Append("Solar panel efficiency: ");
+ if (s_n > 0) {
+  sb.AppendLine(String.Format("{0:0.0}%", s_e * 100f));
+ } else {
+  sb.AppendLine("N/A");
+ }
+ foreach (IMyTextPanel panel in local_text_panels) {
+  panel.WritePublicTitle("STASYS Notification");
+  panel.WritePublicText(sb.ToString());
+  panel.ShowPublicTextOnScreen();
+ }
+}
+
+void s_refreshGroups() {
+  stasys_groups = new List<STASYS_Group>();
+  var groups = new List<IMyBlockGroup>();
+  GridTerminalSystem.GetBlockGroups(groups);
+  for (int i = 0; i < groups.Count; i++) {
+   var group = groups[i];
+   // skip groups we don't want
+   if (!group.Name.StartsWith("STASYS") || group.Name == "STASYS Notify") {
+    continue;
+   }
+   var blocks = new List<IMyTerminalBlock>();
+   group.GetBlocks(blocks);
+   filterLocalGrid(blocks);
+   if (blocks.Count == 0) {
+    // this group is from a foreign grid
+    continue;
+   }
+   try {
+    var g = parseBlockGroup(blocks);
+    g.name = group.Name;
+    stasys_groups.Add(g);
+   } catch (Exception e) {
+    Echo(e.Message);
+   }
+  }
+}
+
+void s_refreshNotification() {
+ var blocks = new List < IMyTerminalBlock > ();
+ var g = GridTerminalSystem.GetBlockGroupWithName("STASYS Notify");
+ if (g != null) {
+  g.GetBlocks(blocks);
+  filterLocalGrid < IMyTextPanel > (blocks);
+ }
+ local_text_panels = blocks;
+}
+
+void s_refreshTimer() {
+ var blocks = new List<IMyTerminalBlock>();
+ GridTerminalSystem.SearchBlocksOfName("STASYS Timer", blocks);
+ filterLocalGrid(blocks);
+ if (blocks.Count == 0) {
+  local_timer = null;
+  return;
+ }
+ if (blocks.Count == 2) {
+  throw new Exception("Multiple STASYS timers detected");
+ }
+ local_timer = blocks[0] as IMyTimerBlock;
 }
 
 void s_refreshGrids() {
@@ -373,6 +634,10 @@ public void Save() {
 public Program() {
  states = new Action [] {
   s_refreshGrids,
+  s_refreshGroups,
+  s_refreshNotification,
+  s_refreshTimer,
+  s_displayStats,
  };
  Me.SetCustomName("STASYS CPU");
  hideFromHud(Me);
@@ -395,6 +660,7 @@ void Main() {
   }
   num_states++;
  } while (canContinue() && num_states < states.Length);
+ Echo(String.Format("Groups under control: {0}", stasys_groups.Count));
 
  ILReport(num_states);
 }

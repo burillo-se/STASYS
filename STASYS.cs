@@ -1,5 +1,5 @@
 /*
- * STASYS v0.2
+ * STASYS v0.3
  *
  * (Solar Tracking Alignment SYStem)
  *
@@ -7,7 +7,7 @@
  *
  */
 
-const string VERSION = "0.2";
+const string VERSION = "0.3";
 
 public List<IMyCubeGrid> local_grids = new List<IMyCubeGrid>();
 public List<IMyTerminalBlock> local_text_panels = new List<IMyTerminalBlock>();

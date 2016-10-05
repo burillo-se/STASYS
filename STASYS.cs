@@ -26,23 +26,57 @@ public class STASYS_Group {
  private Dictionary<IMyCubeGrid, IMyMotorBase> grid_to_rotor;
  bool large_grid;
  enum State {
-  STATE_IDLE,
-  STATE_SEARCH,
-  STATE_FOUND,
-  STATE_ALIGN
+  Idle,
+  Search,
+  Found,
+  Align
  };
+ enum SearchType {
+  Coarse,
+  Fine
+ }
  enum SearchDirection {
-  DIR_LATERAL,
-  DIR_VERTICAL,
-  DIR_MAX
+  Lateral,
+  Vertical
+ }
+ enum DirectionSearchState {
+  MoveToStart,
+  MoveToEnd,
+  MoveToMax
  }
  class SearchState {
-  public SearchDirection cur_direction;
-  public float max_search_result;
-  public float max_angle;
-  public IMyMotorBase cur_rotor;
-  public float cur_limit;
-  public bool ready;
+  public DirectionSearchState state;
+  public SearchType type;
+  public SearchDirection direction;
+  public IMyMotorBase rotor;
+  public float cur_start;
+  public float cur_end;
+  public SearchState() {
+   angles = List<float>();
+   efficiencies = List<float>();
+  }
+  public float getMaxAngle() {
+   int max_idx = 0;
+   float max_efficiency = 0;
+   for (int i = 0; i < angles.Count; i++) {
+    e = efficiencies[i];
+    if (e >= max_efficiency) {
+     max_efficiency = e;
+     max_idx = i;
+    }
+   }
+   return angles[max_idx];
+  }
+  public void addData(float efficiency, float angle) {
+   angles.Add(angle);
+   efficiencies.Add(efficiency);
+  }
+  public void clearData() {
+   angles.Clear();
+   efficiencies.Clear();
+  }
+  List<float> angles;
+  List<float> efficiencies;
  }
  SearchState search_state;
  State state;
@@ -52,86 +86,120 @@ public class STASYS_Group {
   grid_to_rotor = new Dictionary<IMyCubeGrid, IMyMotorBase>();
   name = "";
   large_grid = true;
-  state = State.STATE_IDLE;
-  search_state = new SearchState();
+  state = State.Idle;
  }
  public void processState() {
   switch (state) {
-   case State.STATE_IDLE:
+   case State.Idle:
     break;
-   case State.STATE_SEARCH:
+   case State.Search:
     doSearch();
-    if (search_state.cur_direction == SearchDirection.DIR_MAX) {
-     align(getCurVector());
-     state = State.STATE_FOUND;
-    }
     break;
-   case State.STATE_FOUND:
+   case State.Found:
     align();
     break;
-   case State.STATE_ALIGN:
+   case State.Align:
     if (!align()) {
-     state = State.STATE_IDLE;
+     state = State.Idle;
     }
     break;
   }
  }
  private void doSearch() {
+  var angle = getRotorAngle(search_state.rotor);
   var efficiency = getEfficiency();
-  if (efficiency > search_state.max_search_result) {
-   search_state.max_search_result = efficiency;
-   search_state.max_angle = getRotorAngle(search_state.cur_rotor);
-  }
-  if (!search_state.ready) {
-   var angle = getRotorAngle(search_state.cur_rotor);
-   if (angle == search_state.cur_limit) {
-    search_state.ready = true;
-    search_state.cur_limit = search_state.max_angle;
-    moveRotor(search_state.cur_rotor, search_state.cur_limit, true);
-   }
-  } else if (getRotorAngle(search_state.cur_rotor) == search_state.cur_limit) {
-   search_state.ready = false;
-   search_state.cur_direction++;
-   stopRotor(search_state.cur_rotor);
-   if (search_state.cur_direction != SearchDirection.DIR_MAX) {
-    search_state.max_angle = 0;
-    search_state.max_search_result = 0;
-    var new_rotor = findBaseRotor(getFirstPanel()[0].CubeGrid);
-    if (new_rotor == search_state.cur_rotor) {
-     search_state.cur_direction++;
+  if (search_state.state == DirectionSearchState.MoveToStart &&
+      search_state.cur_start == angle) {
+   // we've reached our start, so start moving towards our target
+   search_state.state = DirectionSearchState.MoveToEnd;
+   bool fast = search_state.type == SearchType.Fine;
+   moveRotor(search_state.cur_rotor, search_state.cur_end, fast);
+   search_state.clearData();
+  } else if (search_state.state == DirectionSearchState.MoveToEnd &&
+             search_state.cur_end == angle) {
+   // we've reached our end, so get max angle and start moving towards it
+   search_state.state = DirectionSearchState.MoveToMax;
+   var target = search_state.getMaxAngle();
+   search_state.cur_start = angle;
+   search_state.cur_end = target;
+   moveRotor(search_state.cur_rotor, target, true);
+  } else if (search_state.state == DirectionSearchState.MoveToMax &&
+             search_state.cur_end == angle) {
+   // we've reached our maximum - now it's time to either switch to different
+   // rotor, or do a fine search
+
+   // first, try a different rotor
+   bool done = false;
+   if (search_state.direction == SearchDirection.Lateral) {
+    var new_rotor = grid_to_rotor[getFirstPanel()[0].CubeGrid];
+    if (new_rotor != search_state.rotor) {
+     search_state.rotor = new_rotor;
+     angle = getRotorAngle(search_state.rotor);
+     var offset = search_state.type == SearchType.Coarse ? 90 : 15;
+     var start = angle - offset;
+     var target = angle + offset;
+     search_state.direction = SearchDirection.Vertical;
+     search_state.cur_start = start;
+     search_state.cur_end = target;
+     search_state.state = DirectionSearchState.MoveToStart;
+     moveRotor(search_state.rotor, start, true);
+     return;
     } else {
-     search_state.cur_rotor = new_rotor;
-     var angle = getRotorAngle(search_state.cur_rotor);
-     var target = angle >= 180 ? angle - 180 : angle + 180;
-     moveRotor(search_state.cur_rotor, target);
-     search_state.cur_limit = target;
+     done = true;
+    }
+   }
+   if (search_state.direction == SearchDirection.Vertical || done) {
+    // there are no other rotors, so either switch to next scanning mode, or we're done
+    if (search_state.type == SearchType.Coarse) {
+     var offset = 15;
+     var start = angle - offset;
+     var target = angle + offset;
+     search_state.direction = SearchDirection.Lateral;
+     search_state.type = SearchType.Coarse;
+     search_state.cur_start = start;
+     search_state.cur_end = target;
+     search_state.state = DirectionSearchState.MoveToStart;
+     moveRotor(search_state.rotor, start, true);
+    } else {
+     // we're done, so get current vector, align everything and report for duty
+     align(getCurVector());
+     state = State.Found;
     }
    }
   }
+  search_state.addData(angle, efficiency);
  }
  public void findSun() {
-  if (state != State.STATE_IDLE) {
+  if (state != State.Idle) {
    return;
   }
+  // if we have high efficiency at the outself, do a fine search from the outset
+  SearchType t;
+  if (getEfficiency() > 0.85) {
+   t = SearchType.Fine;
+  } else {
+   t = SearchType.Coarse;
+  }
+  state = State.Search;
   var base_rotor = grid_to_rotor[getFirstPanel()[0].CubeGrid];
-  state = State.STATE_SEARCH;
   search_state = new SearchState();
-  search_state.cur_rotor = base_rotor;
-  var angle = getRotorAngle(search_state.cur_rotor);
-  var target = angle >= 180 ? angle - 180 : angle + 180;
-  search_state.cur_limit = target;
-  search_state.max_angle = 0;
-  search_state.max_search_result = 0;
-  search_state.ready = false;
-  moveRotor(search_state.cur_rotor, target);
+  search_state.rotor = base_rotor;
+  var angle = getRotorAngle(search_state.rotor);
+  var offset = t == SearchType.Coarse ? 90 : 15;
+  var start = angle - offset;
+  var target = angle + offset;
+  search_state.direction = SearchDirection.Lateral;
+  search_state.cur_start = start;
+  search_state.cur_end = target;
+  search_state.state = DirectionSearchState.MoveToStart;
+  moveRotor(search_state.rotor, start, true);
+  // at this point, we're moving to our start position
  }
  public bool foundSun() {
-  return state == State.STATE_FOUND && !align();
+  return state == State.Found && !align();
  }
- private void rotate() {
   // var qt = Quaternion.CreateFromAxisAngle(search_state.up, MathHelper.ToRadians(1));
   // var result = Vector3D.Transform(alignment_vector, qt);
- }
  public Vector3D getCurVector() {
   var list = getFirstPanel();
   foreach (var panel in list) {
@@ -199,9 +267,9 @@ public class STASYS_Group {
  }
  public void reset() {
   if (align(findFirstBaseRotor().WorldMatrix.Forward)) {
-   state = State.STATE_ALIGN;
+   state = State.Align;
   } else {
-   state = State.STATE_IDLE;
+   state = State.Idle;
   }
  }
  private float getRotorAngle(IMyTerminalBlock b) {
@@ -312,10 +380,10 @@ public class STASYS_Group {
   return align();
  }
  public void setAlignment(Vector3D direction) {
-  if (state != State.STATE_IDLE && state != State.STATE_ALIGN) {
+  if (state != State.Idle && state != State.Align) {
    return;
   }
-  state = State.STATE_ALIGN;
+  state = State.Align;
   align(direction);
  }
  public bool hasSolarPanels() {

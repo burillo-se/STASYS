@@ -341,7 +341,7 @@ public class STASYS_Group {
    stopRotor(rotor);
    return false;
   } else {
-   moveRotor(rotor, target);
+   moveRotor(rotor, target, true);
    return true;
   }
  }

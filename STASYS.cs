@@ -284,9 +284,10 @@ public class STASYS_Group {
  private float getAngle(Vector3D normal, Vector3D src, Vector3D dst) {
   var src_dot = Vector3D.Dot(src, normal);
   var dst_dot = Vector3D.Dot(dst, normal);
+  var src_dst_dot = Vector3D.Dot(src, dst);
 
-  // sometimes, src or dst vector is orthogonal to the plane, in this case bail out
-  if (src_dot > 0.99 || dst_dot > 0.99) {
+  // sometimes, src or dst vector is orthogonal to the plane, or they are parallel
+  if (src_dot > 0.99 || dst_dot > 0.99 || src_dst_dot > 0.99) {
    return 0f;
   }
   var src_proj = Vector3D.Normalize(src - src_dot * normal);

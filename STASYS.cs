@@ -1,5 +1,5 @@
 /*
- * STASYS v0.3
+ * STASYS v0.4
  *
  * (Solar Tracking Alignment SYStem)
  *
@@ -7,18 +7,21 @@
  *
  */
 
-// for safekeeping!
-
- // var qt = Quaternion.CreateFromAxisAngle(normal, MathHelper.ToRadians(angle));
- // var result = Vector3D.Transform(vector, qt);
-
-const string VERSION = "0.3";
+const string VERSION = "0.4";
 
 public List<IMyCubeGrid> local_grids = new List<IMyCubeGrid>();
 public List<IMyTerminalBlock> local_text_panels = new List<IMyTerminalBlock>();
 public Dictionary<string, STASYS_Group> stasys_groups = new Dictionary<string, STASYS_Group>();
+
 Vector3D sun_vector;
-IMyTimerBlock local_timer = null;
+Vector3D prev_sun_vector;
+Vector3D sun_normal;
+float cur_max_efficiency;
+float degrees_per_second;
+TimeSpan time_since_last_scan;
+TimeSpan time_since_last_rotation;
+TimeSpan darkness_timeout;
+bool init;
 
 // state machine
 Action [] states = null;
@@ -53,20 +56,30 @@ public class STASYS_Group {
   public float cur_start;
   public float cur_end;
   public SearchState() {
-   angles = List<float>();
-   efficiencies = List<float>();
+   angles = new List<float>();
+   efficiencies = new List<float>();
   }
   public float getMaxAngle() {
    int max_idx = 0;
    float max_efficiency = 0;
    for (int i = 0; i < angles.Count; i++) {
-    e = efficiencies[i];
+    var e = efficiencies[i];
     if (e >= max_efficiency) {
      max_efficiency = e;
      max_idx = i;
     }
    }
    return angles[max_idx];
+  }
+  public float getMaxEfficiency() {
+   float max_efficiency = 0;
+   for (int i = 0; i < angles.Count; i++) {
+    var e = efficiencies[i];
+    if (e >= max_efficiency) {
+     max_efficiency = e;
+    }
+   }
+   return max_efficiency;
   }
   public void addData(float efficiency, float angle) {
    angles.Add(angle);
@@ -98,6 +111,9 @@ public class STASYS_Group {
  public void processState() {
   switch (state) {
    case State.Idle:
+    foreach (var pair in grid_to_rotor) {
+     stopRotor(pair.Value);
+    }
     break;
    case State.Search:
     doSearch();
@@ -109,6 +125,8 @@ public class STASYS_Group {
     if (!align()) {
      state = State.Idle;
     }
+    break;
+   default:
     break;
   }
  }
@@ -125,16 +143,18 @@ public class STASYS_Group {
    t = SearchType.Coarse;
   }
   state = State.Search;
-  var base_rotor = grid_to_rotor[getFirstPanel()[0].CubeGrid];
+  bool fast = t == SearchType.Coarse;
+  var base_rotor = findBaseRotor(getFirstPanel()[0].CubeGrid);
   search_state = new SearchState();
   search_state.rotor = base_rotor;
-  var angle = getRotorAngle(search_state.rotor);
-  var offset = t == SearchType.Coarse ? 90 : 15;
+  var angle = normalizeAngle(getRotorAngle(search_state.rotor));
+  var offset = fast ? 90 : 20;
   var start = angle - offset;
   var target = angle + offset;
   search_state.direction = SearchDirection.Lateral;
   search_state.cur_start = start;
   search_state.cur_end = target;
+  search_state.type = t;
   search_state.state = DirectionSearchState.MoveToStart;
   moveRotor(search_state.rotor, start, true);
   // at this point, we're moving to our start position
@@ -142,6 +162,18 @@ public class STASYS_Group {
 
  public bool foundSun() {
   return state == State.Found && !align();
+ }
+
+ public bool isIdle() {
+  return state == State.Idle;
+ }
+
+ public bool scanningForSun() {
+  return state == State.Search;
+ }
+
+ public void stopScan() {
+  state = State.Idle;
  }
 
  public Vector3D getCurVector() {
@@ -245,6 +277,20 @@ public class STASYS_Group {
   return total == 0 ? 0 : cur / total;
  }
 
+ public float getSolarOutput() {
+  float cur = 0;
+  foreach (var pair in panels) {
+   foreach (var block in pair.Value) {
+    if (!(block is IMySolarPanel)) {
+     continue;
+    }
+    var panel = block as IMySolarPanel;
+    cur += panel.MaxOutput;
+   }
+  }
+  return cur * 1000f; // output in kiloWatts
+ }
+
  public float getOxygenEfficiency() {
   float cur = 0;
   float total = 0;
@@ -254,12 +300,26 @@ public class STASYS_Group {
      continue;
     }
     var farm = block as IMyOxygenFarm;
-    float max = 1.80f;
+    float max = 1f;
     total += max;
     cur += farm.GetOutput();
    }
   }
   return total == 0 ? 0 : cur / total;
+ }
+
+ public float getOxygenOutput() {
+  float cur = 0;
+  foreach (var pair in panels) {
+   foreach (var block in pair.Value) {
+    if (!(block is IMyOxygenFarm)) {
+     continue;
+    }
+    var farm = block as IMyOxygenFarm;
+    cur += farm.GetOutput() * 1.8f;
+   }
+  }
+  return cur; // output in liters
  }
 
  /*
@@ -272,8 +332,8 @@ public class STASYS_Group {
       search_state.cur_start == angle) {
    // we've reached our start, so start moving towards our target
    search_state.state = DirectionSearchState.MoveToEnd;
-   bool fast = search_state.type == SearchType.Fine;
-   moveRotor(search_state.cur_rotor, search_state.cur_end, fast);
+   bool fast = search_state.type == SearchType.Coarse;
+   moveRotor(search_state.rotor, search_state.cur_end, fast);
    search_state.clearData();
   } else if (search_state.state == DirectionSearchState.MoveToEnd &&
              search_state.cur_end == angle) {
@@ -282,7 +342,7 @@ public class STASYS_Group {
    var target = search_state.getMaxAngle();
    search_state.cur_start = angle;
    search_state.cur_end = target;
-   moveRotor(search_state.cur_rotor, target, true);
+   moveRotor(search_state.rotor, target, true);
   } else if (search_state.state == DirectionSearchState.MoveToMax &&
              search_state.cur_end == angle) {
    // we've reached our maximum - now it's time to either switch to different
@@ -293,9 +353,10 @@ public class STASYS_Group {
    if (search_state.direction == SearchDirection.Lateral) {
     var new_rotor = grid_to_rotor[getFirstPanel()[0].CubeGrid];
     if (new_rotor != search_state.rotor) {
+     stopRotor(search_state.rotor);
      search_state.rotor = new_rotor;
-     angle = getRotorAngle(search_state.rotor);
-     var offset = search_state.type == SearchType.Coarse ? 90 : 15;
+     angle = normalizeAngle(getRotorAngle(search_state.rotor));
+     var offset = search_state.type == SearchType.Coarse ? 90 : 20;
      var start = angle - offset;
      var target = angle + offset;
      search_state.direction = SearchDirection.Vertical;
@@ -311,11 +372,21 @@ public class STASYS_Group {
    if (search_state.direction == SearchDirection.Vertical || done) {
     // there are no other rotors, so either switch to next scanning mode, or we're done
     if (search_state.type == SearchType.Coarse) {
-     var offset = 15;
+     // if we didn't find anything, stop
+     var e = search_state.getMaxEfficiency();
+     if (e < 0.10) {
+      reset();
+      return;
+     }
+     // update our rotor
+     stopRotor(search_state.rotor);
+     search_state.rotor = findBaseRotor(getFirstPanel()[0].CubeGrid);
+     angle = getRotorAngle(search_state.rotor);
+     var offset = 20;
      var start = angle - offset;
      var target = angle + offset;
      search_state.direction = SearchDirection.Lateral;
-     search_state.type = SearchType.Coarse;
+     search_state.type = SearchType.Fine;
      search_state.cur_start = start;
      search_state.cur_end = target;
      search_state.state = DirectionSearchState.MoveToStart;
@@ -327,7 +398,7 @@ public class STASYS_Group {
     }
    }
   }
-  search_state.addData(angle, efficiency);
+  search_state.addData(efficiency, angle);
  }
 
  private IMyMotorBase findFirstBaseRotor() {
@@ -426,7 +497,7 @@ public class STASYS_Group {
   var offset = getAngle(normal, vec, alignment_vector);
   var cur_angle = getRotorAngle(rotor);
   var target = normalizeAngle(cur_angle - offset);
-  if (angleDiff(target, cur_angle) < 2) {
+  if (angleDiff(target, cur_angle) < 1) {
    stopRotor(rotor);
    return false;
   } else {
@@ -805,6 +876,43 @@ public void filterLocalGrid<T>(List < IMyTerminalBlock > blocks) {
 /*
  * Misc functions
  */
+// code duplication ftw! that's what you get when you don't have statics...
+float getAngle(Vector3D normal, Vector3D src, Vector3D dst) {
+ var src_dot = Vector3D.Dot(src, normal);
+ var dst_dot = Vector3D.Dot(dst, normal);
+ var src_dst_dot = Vector3D.Dot(src, dst);
+
+ // sometimes, src or dst vector is orthogonal to the plane, or they are parallel
+ if (Math.Abs(src_dot) > 0.99 || Math.Abs(dst_dot) > 0.99 || Math.Abs(src_dst_dot) > 0.99) {
+  return 0f;
+ }
+ var src_proj = Vector3D.Normalize(src - src_dot * normal);
+ var dst_proj = Vector3D.Normalize(dst - dst_dot * normal);
+
+ var dot = Vector3D.Dot(src_proj, dst_proj);
+ var cross = Vector3D.Normalize(Vector3D.Cross(src_proj, dst_proj));
+ var cross_dot = Vector3D.Dot(normal, cross);
+ var rad = Math.Acos(dot);
+ var deg = (float) Math.Round(MathHelper.ToDegrees(rad));
+ var result = dot < 0 ? -(180 - deg) : deg;
+ result = cross_dot > 0 ? result : -result;
+ return result;
+}
+
+string getUnitStr(float v) {
+ var pwrs = "kMGTPEZY";
+ int pwr_idx = 0;
+ while (v >= 1000) {
+  v /= 1000;
+  pwr_idx++;
+ }
+ if (v >= 100)
+  return String.Format("{0:0}", v) + pwrs[pwr_idx];
+ else if (v >= 10)
+  return String.Format("{0:0.0}", v) + pwrs[pwr_idx];
+ else
+  return String.Format("{0:0.00}", v) + pwrs[pwr_idx];
+}
 
 void showOnHud(IMyTerminalBlock b) {
  if (b.GetProperty("ShowOnHUD") != null) {
@@ -847,25 +955,56 @@ STASYS_Group updateFromGroup(List<IMyTerminalBlock> blocks, STASYS_Group g) {
  */
 
 void s_processStates() {
- float max_e = 0;
- Vector3D max_v;
+ if (time_since_last_rotation < darkness_timeout) {
+  return;
+ }
+ bool scan = false;
+ if (sun_normal != Vector3D.Zero && time_since_last_rotation > new TimeSpan(0, 0, 15)) {
+  var qt = Quaternion.CreateFromAxisAngle(sun_normal, MathHelper.ToRadians(degrees_per_second * 15f));
+  sun_vector = Vector3D.Transform(sun_vector, qt);
+  time_since_last_rotation = TimeSpan.Zero;
+ } else if (!init ||
+            (sun_normal != Vector3D.Zero && time_since_last_scan > new TimeSpan(0, 6, 0)) ||
+            (sun_normal == Vector3D.Zero && time_since_last_scan > new TimeSpan(0, 1, 0))) {
+  time_since_last_scan = TimeSpan.Zero;
+  cur_max_efficiency = 0;
+  if (prev_sun_vector != Vector3D.Zero) {
+   sun_normal = Vector3D.Normalize(Vector3D.Cross(sun_vector, prev_sun_vector));
+   // get angle between prev and cur sun vectors
+   var angle = getAngle(sun_normal, prev_sun_vector, sun_vector);
+   degrees_per_second = angle / 180f;
+   prev_sun_vector = Vector3D.Zero;
+  } else {
+   prev_sun_vector = sun_vector;
+   scan = true;
+  }
+ }
+ bool all_dark = true;
  foreach (var pair in stasys_groups) {
   var g = pair.Value;
-  try {
-   g.processState();
-   if (g.foundSun()) {
-    max_v = g.getCurVector();
-    var e = Math.Max(g.getSolarEfficiency(), g.getOxygenEfficiency());
-    if (e > max_e) {
-     sun_vector = max_v;
-     max_e = e;
-    }
-   } else if (sun_vector != Vector3D.Zero) {
-    g.setAlignment(sun_vector);
-   }
-  } catch (Exception e) {
-   Echo(e.Message);
+  g.processState();
+  if (scan == true) {
+   g.findSun();
+   init = true;
   }
+  var e = Math.Max(g.getSolarEfficiency(), g.getOxygenEfficiency());
+  if (g.isIdle() && e > 0.05) {
+   all_dark = false;
+  }
+  if (g.foundSun()) {
+   var max_v = g.getCurVector();
+   g.stopScan();
+   if (e > 0.10 && e > cur_max_efficiency) {
+    sun_vector = max_v;
+    cur_max_efficiency = e;
+   }
+  } else if (sun_vector != Vector3D.Zero) {
+   g.setAlignment(sun_vector);
+  }
+ }
+ if (all_dark) {
+  time_since_last_rotation = TimeSpan.Zero;
+  darkness_timeout = new TimeSpan(0, 5, 0);
  }
 }
 
@@ -876,15 +1015,18 @@ void s_displayStats() {
  var sb = new StringBuilder();
  float o_e = 0f, s_e = 0f;
  int o_n = 0, s_n = 0;
+ float o_o = 0f, s_o = 0f;
  foreach (var pair in stasys_groups) {
   var g = pair.Value;
   if (g.hasOxygenFarms()) {
    o_n++;
    o_e += g.getOxygenEfficiency();
+   o_o += g.getOxygenOutput();
   }
   if (g.hasSolarPanels()) {
    s_n++;
    s_e += g.getSolarEfficiency();
+   s_o += g.getSolarOutput();
   }
  }
  o_e /= o_n == 0 ? 1 : o_n;
@@ -892,16 +1034,15 @@ void s_displayStats() {
 
  sb.AppendLine(String.Format("STASYS v{0}", VERSION));
  sb.AppendLine(String.Format("Groups under control: {0}", stasys_groups.Count));
- sb.AppendLine(String.Format("Dedicated timer: {0}", local_timer == null ? "no" : "yes"));
  sb.Append("Oxygen farm efficiency: ");
  if (o_n > 0) {
-  sb.AppendLine(String.Format("{0:0.0}%", o_e * 100f));
+  sb.AppendLine(String.Format("{0:0.0}% ({1:0} L)", o_e * 100f, o_o));
  } else {
   sb.AppendLine("N/A");
  }
  sb.Append("Solar panel efficiency: ");
  if (s_n > 0) {
-  sb.AppendLine(String.Format("{0:0.0}%", s_e * 100f));
+  sb.AppendLine(String.Format("{0:0.0}% ({1}W)", s_e * 100f, getUnitStr(s_o)));
  } else {
   sb.AppendLine("N/A");
  }
@@ -935,11 +1076,6 @@ void s_refreshGroups() {
     if (stasys_groups.ContainsKey(name)) {
      g = stasys_groups[name];
      updateFromGroup(blocks, g);
-     if (sun_vector != Vector3D.Zero) {
-      g.setAlignment(sun_vector);
-     } else {
-      g.findSun();
-     }
     } else {
      g = new STASYS_Group();
      updateFromGroup(blocks, g);
@@ -962,20 +1098,6 @@ void s_refreshNotification() {
   filterLocalGrid < IMyTextPanel > (blocks);
  }
  local_text_panels = blocks;
-}
-
-void s_refreshTimer() {
- var blocks = new List<IMyTerminalBlock>();
- GridTerminalSystem.SearchBlocksOfName("STASYS Timer", blocks);
- filterLocalGrid(blocks);
- if (blocks.Count == 0) {
-  local_timer = null;
-  return;
- }
- if (blocks.Count == 2) {
-  throw new Exception("Multiple STASYS timers detected");
- }
- local_timer = blocks[0] as IMyTimerBlock;
 }
 
 void s_refreshGrids() {
@@ -1034,7 +1156,6 @@ public Program() {
   s_refreshGrids,
   s_refreshGroups,
   s_refreshNotification,
-  s_refreshTimer,
   s_processStates,
   s_displayStats,
  };
@@ -1042,10 +1163,17 @@ public Program() {
  hideFromHud(Me);
  current_state = 0;
  sun_vector = new Vector3D();
+ sun_normal = new Vector3D();
+ cur_max_efficiency = 0f;
+ time_since_last_scan = TimeSpan.Zero;
+ time_since_last_rotation = TimeSpan.Zero;
  state_cycle_counts = new int[states.Length];
+ init = false;
 }
 
 void Main() {
+ time_since_last_scan += Runtime.TimeSinceLastRun;
+ time_since_last_rotation += Runtime.TimeSinceLastRun;
  Echo(String.Format("STASYS version {0}", VERSION));
  int num_states = 0;
  cycle_count = 0;

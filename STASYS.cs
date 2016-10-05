@@ -287,7 +287,7 @@ public class STASYS_Group {
   var src_dst_dot = Vector3D.Dot(src, dst);
 
   // sometimes, src or dst vector is orthogonal to the plane, or they are parallel
-  if (src_dot > 0.99 || dst_dot > 0.99 || src_dst_dot > 0.99) {
+  if (Math.Abs(src_dot) > 0.99 || Math.Abs(dst_dot) > 0.99 || Math.Abs(src_dst_dot) > 0.99) {
    return 0f;
   }
   var src_proj = Vector3D.Normalize(src - src_dot * normal);

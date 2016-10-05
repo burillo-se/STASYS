@@ -7,6 +7,11 @@
  *
  */
 
+// for safekeeping!
+
+ // var qt = Quaternion.CreateFromAxisAngle(normal, MathHelper.ToRadians(angle));
+ // var result = Vector3D.Transform(vector, qt);
+
 const string VERSION = "0.3";
 
 public List<IMyCubeGrid> local_grids = new List<IMyCubeGrid>();
@@ -21,10 +26,6 @@ Action [] states = null;
 int current_state;
 
 public class STASYS_Group {
- public string name;
- private Dictionary<IMyCubeGrid, List<IMyTerminalBlock>> panels;
- private Dictionary<IMyCubeGrid, IMyMotorBase> grid_to_rotor;
- bool large_grid;
  enum State {
   Idle,
   Search,
@@ -78,9 +79,14 @@ public class STASYS_Group {
   List<float> angles;
   List<float> efficiencies;
  }
+ public string name;
+ Dictionary<IMyCubeGrid, List<IMyTerminalBlock>> panels;
+ Dictionary<IMyCubeGrid, IMyMotorBase> grid_to_rotor;
+ bool large_grid;
  SearchState search_state;
  State state;
  Vector3D alignment_vector;
+
  public STASYS_Group() {
   panels = new Dictionary<IMyCubeGrid, List<IMyTerminalBlock>>();
   grid_to_rotor = new Dictionary<IMyCubeGrid, IMyMotorBase>();
@@ -88,6 +94,7 @@ public class STASYS_Group {
   large_grid = true;
   state = State.Idle;
  }
+
  public void processState() {
   switch (state) {
    case State.Idle:
@@ -105,6 +112,159 @@ public class STASYS_Group {
     break;
   }
  }
+
+ public void findSun() {
+  if (state != State.Idle) {
+   return;
+  }
+  // if we have high efficiency at the outself, do a fine search from the outset
+  SearchType t;
+  if (getEfficiency() > 0.85) {
+   t = SearchType.Fine;
+  } else {
+   t = SearchType.Coarse;
+  }
+  state = State.Search;
+  var base_rotor = grid_to_rotor[getFirstPanel()[0].CubeGrid];
+  search_state = new SearchState();
+  search_state.rotor = base_rotor;
+  var angle = getRotorAngle(search_state.rotor);
+  var offset = t == SearchType.Coarse ? 90 : 15;
+  var start = angle - offset;
+  var target = angle + offset;
+  search_state.direction = SearchDirection.Lateral;
+  search_state.cur_start = start;
+  search_state.cur_end = target;
+  search_state.state = DirectionSearchState.MoveToStart;
+  moveRotor(search_state.rotor, start, true);
+  // at this point, we're moving to our start position
+ }
+
+ public bool foundSun() {
+  return state == State.Found && !align();
+ }
+
+ public Vector3D getCurVector() {
+  var list = getFirstPanel();
+  foreach (var panel in list) {
+   return panel.WorldMatrix.Forward;
+  }
+  throw new Exception("Something exploded");
+ }
+
+ public void setPanels(List<IMyTerminalBlock> blocks) {
+  panels.Clear();
+  var directions = new Dictionary<IMyCubeGrid, Vector3D>();
+  foreach (var panel in blocks) {
+   var dir = Vector3D.Abs(panel.WorldMatrix.Forward);
+   var grid = panel.CubeGrid;
+   if (directions.ContainsKey(grid)) {
+    var other_dir = directions[grid];
+    if (other_dir != dir) {
+     throw new Exception("Misaligned panel: " + panel.CustomName);
+    }
+   } else {
+    directions.Add(grid, dir);
+   }
+   if (panels.ContainsKey(grid)) {
+    panels[grid].Add(panel);
+   } else {
+    var list = new List<IMyTerminalBlock>() {panel};
+    panels.Add(grid, list);
+   }
+  }
+ }
+
+ public void setRotors(Dictionary<IMyMotorBase, IMyCubeGrid> rotors) {
+  grid_to_rotor.Clear();
+  var directions = new HashSet<Vector3D>();
+  foreach (var pair in rotors) {
+   var rotor = pair.Key;
+   var dir = Vector3D.Abs(rotor.WorldMatrix.Up);
+   if (!directions.Contains(dir) && directions.Count > 2) {
+    throw new Exception("Misaligned rotor: " + rotor.CustomName);
+   }
+   grid_to_rotor.Add(pair.Value, rotor);
+   directions.Add(dir);
+   large_grid = rotor.BlockDefinition.ToString().Contains("Large");
+  }
+ }
+
+ public void reset() {
+  if (align(findFirstBaseRotor().WorldMatrix.Forward)) {
+   state = State.Align;
+  } else {
+   state = State.Idle;
+  }
+ }
+
+ public void setAlignment(Vector3D direction) {
+  if (state != State.Idle && state != State.Align) {
+   return;
+  }
+  state = State.Align;
+  align(direction);
+ }
+
+ public bool hasSolarPanels() {
+  foreach (var pair in panels) {
+   foreach (var block in pair.Value) {
+    if (block is IMySolarPanel) {
+     return true;
+    }
+   }
+  }
+  return false;
+ }
+
+ public bool hasOxygenFarms() {
+  foreach (var pair in panels) {
+   foreach (var block in pair.Value) {
+    if (block is IMyOxygenFarm) {
+     return true;
+    }
+   }
+  }
+  return false;
+ }
+
+ public float getSolarEfficiency() {
+  float cur = 0;
+  float total = 0;
+  foreach (var pair in panels) {
+   foreach (var block in pair.Value) {
+    if (!(block is IMySolarPanel)) {
+     continue;
+    }
+    var panel = block as IMySolarPanel;
+    float max = large_grid ? 0.120f : 0.30f;
+    total += max;
+    cur += panel.MaxOutput;
+   }
+  }
+  return total == 0 ? 0 : cur / total;
+ }
+
+ public float getOxygenEfficiency() {
+  float cur = 0;
+  float total = 0;
+  foreach (var pair in panels) {
+   foreach (var block in pair.Value) {
+    if (!(block is IMyOxygenFarm)) {
+     continue;
+    }
+    var farm = block as IMyOxygenFarm;
+    float max = 1.80f;
+    total += max;
+    cur += farm.GetOutput();
+   }
+  }
+  return total == 0 ? 0 : cur / total;
+ }
+
+ /*
+  * Internals
+  */
  private void doSearch() {
   var angle = getRotorAngle(search_state.rotor);
   var efficiency = getEfficiency();
@@ -169,44 +329,7 @@ public class STASYS_Group {
   }
   search_state.addData(angle, efficiency);
  }
- public void findSun() {
-  if (state != State.Idle) {
-   return;
-  }
-  // if we have high efficiency at the outself, do a fine search from the outset
-  SearchType t;
-  if (getEfficiency() > 0.85) {
-   t = SearchType.Fine;
-  } else {
-   t = SearchType.Coarse;
-  }
-  state = State.Search;
-  var base_rotor = grid_to_rotor[getFirstPanel()[0].CubeGrid];
-  search_state = new SearchState();
-  search_state.rotor = base_rotor;
-  var angle = getRotorAngle(search_state.rotor);
-  var offset = t == SearchType.Coarse ? 90 : 15;
-  var start = angle - offset;
-  var target = angle + offset;
-  search_state.direction = SearchDirection.Lateral;
-  search_state.cur_start = start;
-  search_state.cur_end = target;
-  search_state.state = DirectionSearchState.MoveToStart;
-  moveRotor(search_state.rotor, start, true);
-  // at this point, we're moving to our start position
- }
- public bool foundSun() {
-  return state == State.Found && !align();
- }
-  // var qt = Quaternion.CreateFromAxisAngle(search_state.up, MathHelper.ToRadians(1));
-  // var result = Vector3D.Transform(alignment_vector, qt);
- public Vector3D getCurVector() {
-  var list = getFirstPanel();
-  foreach (var panel in list) {
-   return panel.WorldMatrix.Forward;
-  }
-  throw new Exception("Something exploded");
- }
+
  private IMyMotorBase findFirstBaseRotor() {
   foreach (var pair in grid_to_rotor) {
    var rotor = pair.Value;
@@ -216,6 +339,7 @@ public class STASYS_Group {
   }
   return null;
  }
+
  private IMyMotorBase findBaseRotor(IMyCubeGrid grid) {
   var queue = new Queue<IMyMotorBase>();
   queue.Enqueue(grid_to_rotor[grid]);
@@ -229,49 +353,7 @@ public class STASYS_Group {
   }
   throw new Exception("Disconnected rotor grids found");
  }
- public void setPanels(List<IMyTerminalBlock> blocks) {
-  panels.Clear();
-  var directions = new Dictionary<IMyCubeGrid, Vector3D>();
-  foreach (var panel in blocks) {
-   var dir = Vector3D.Abs(panel.WorldMatrix.Forward);
-   var grid = panel.CubeGrid;
-   if (directions.ContainsKey(grid)) {
-    var other_dir = directions[grid];
-    if (other_dir != dir) {
-     throw new Exception("Misaligned panel: " + panel.CustomName);
-    }
-   } else {
-    directions.Add(grid, dir);
-   }
-   if (panels.ContainsKey(grid)) {
-    panels[grid].Add(panel);
-   } else {
-    var list = new List<IMyTerminalBlock>() {panel};
-    panels.Add(grid, list);
-   }
-  }
- }
- public void setRotors(Dictionary<IMyMotorBase, IMyCubeGrid> rotors) {
-  grid_to_rotor.Clear();
-  var directions = new HashSet<Vector3D>();
-  foreach (var pair in rotors) {
-   var rotor = pair.Key;
-   var dir = Vector3D.Abs(rotor.WorldMatrix.Up);
-   if (!directions.Contains(dir) && directions.Count > 2) {
-    throw new Exception("Misaligned rotor: " + rotor.CustomName);
-   }
-   grid_to_rotor.Add(pair.Value, rotor);
-   directions.Add(dir);
-   large_grid = rotor.BlockDefinition.ToString().Contains("Large");
-  }
- }
- public void reset() {
-  if (align(findFirstBaseRotor().WorldMatrix.Forward)) {
-   state = State.Align;
-  } else {
-   state = State.Idle;
-  }
- }
+
  private float getRotorAngle(IMyTerminalBlock b) {
   var angle_regex = new System.Text.RegularExpressions.Regex("([\\-]?\\d+)");
   var cur_match = angle_regex.Match(b.DetailedInfo);
@@ -281,6 +363,7 @@ public class STASYS_Group {
   var val = float.Parse(cur_match.Groups[1].Value);
   return val;
  }
+
  private float getAngle(Vector3D normal, Vector3D src, Vector3D dst) {
   var src_dot = Vector3D.Dot(src, normal);
   var dst_dot = Vector3D.Dot(dst, normal);
@@ -302,6 +385,7 @@ public class STASYS_Group {
   result = cross_dot > 0 ? result : -result;
   return result;
  }
+
  private float normalizeAngle(float angle) {
   while (angle > 180) {
    angle -= 180;
@@ -311,6 +395,7 @@ public class STASYS_Group {
   }
   return angle;
  }
+
  private float angleDiff(float a1, float a2) {
   var n_a1 = normalizeAngle(a1);
   var n_a2 = normalizeAngle(a2);
@@ -320,6 +405,7 @@ public class STASYS_Group {
   diff = Math.Min(diff, smaller + 180 - bigger);
   return diff;
  }
+
  private void moveRotor(IMyMotorBase rotor, float target, bool fast = false) {
   var cur_angle = getRotorAngle(rotor);
   bool right = target > cur_angle;
@@ -329,10 +415,12 @@ public class STASYS_Group {
   rotor.SetValue("LowerLimit", right ? cur_angle : target);
   rotor.SetValue("Weld speed", 20f);
  }
+
  private void stopRotor(IMyMotorBase rotor) {
   rotor.SetValue("Velocity", 0f);
   rotor.SetValue("Weld speed", 2f);
  }
+
  private bool moveRotor(IMyMotorBase rotor, Vector3D vec) {
   var normal = rotor.WorldMatrix.Up;
   var offset = getAngle(normal, vec, alignment_vector);
@@ -346,6 +434,7 @@ public class STASYS_Group {
    return true;
   }
  }
+
  private bool alignPanelsByRotors() {
   bool result = false;
   foreach (var pair in panels) {
@@ -358,6 +447,7 @@ public class STASYS_Group {
   }
   return result;
  }
+
  private bool alignBaseRotors() {
   bool result = false;
   foreach (var pair in panels) {
@@ -370,42 +460,17 @@ public class STASYS_Group {
   }
   return result;
  }
+
  private bool align() {
   bool result;
   result = alignPanelsByRotors();
   result |= alignBaseRotors();
   return result;
  }
+
  private bool align(Vector3D direction) {
   alignment_vector = direction;
   return align();
- }
- public void setAlignment(Vector3D direction) {
-  if (state != State.Idle && state != State.Align) {
-   return;
-  }
-  state = State.Align;
-  align(direction);
- }
- public bool hasSolarPanels() {
-  foreach (var pair in panels) {
-   foreach (var block in pair.Value) {
-    if (block is IMySolarPanel) {
-     return true;
-    }
-   }
-  }
-  return false;
- }
- public bool hasOxygenFarms() {
-  foreach (var pair in panels) {
-   foreach (var block in pair.Value) {
-    if (block is IMyOxygenFarm) {
-     return true;
-    }
-   }
-  }
-  return false;
  }
  private List<IMyTerminalBlock> getFirstPanel() {
   foreach (var pair in panels) {
@@ -413,6 +478,7 @@ public class STASYS_Group {
   }
   throw new Exception("No panels");
  }
+
  private float getEfficiency() {
   float cur = 0;
   float total = 0;
@@ -424,38 +490,6 @@ public class STASYS_Group {
     total += max;
     cur += panel.MaxOutput;
    } else {
-    var farm = block as IMyOxygenFarm;
-    float max = 1.80f;
-    total += max;
-    cur += farm.GetOutput();
-   }
-  }
-  return total == 0 ? 0 : cur / total;
- }
- public float getSolarEfficiency() {
-  float cur = 0;
-  float total = 0;
-  foreach (var pair in panels) {
-   foreach (var block in pair.Value) {
-    if (!(block is IMySolarPanel)) {
-     continue;
-    }
-    var panel = block as IMySolarPanel;
-    float max = large_grid ? 0.120f : 0.30f;
-    total += max;
-    cur += panel.MaxOutput;
-   }
-  }
-  return total == 0 ? 0 : cur / total;
- }
- public float getOxygenEfficiency() {
-  float cur = 0;
-  float total = 0;
-  foreach (var pair in panels) {
-   foreach (var block in pair.Value) {
-    if (!(block is IMyOxygenFarm)) {
-     continue;
-    }
     var farm = block as IMyOxygenFarm;
     float max = 1.80f;
     total += max;

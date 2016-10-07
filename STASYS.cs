@@ -13,20 +13,22 @@ public List<IMyCubeGrid> local_grids = new List<IMyCubeGrid>();
 public List<IMyTerminalBlock> local_text_panels = new List<IMyTerminalBlock>();
 public Dictionary<string, STASYS_Group> stasys_groups = new Dictionary<string, STASYS_Group>();
 
-Vector3D sun_vector;
-Vector3D prev_sun_vector;
-Vector3D sun_normal;
-float cur_max_efficiency;
-float degrees_per_second;
-TimeSpan time_since_last_scan;
-TimeSpan time_since_last_rotation;
-TimeSpan darkness_timeout;
-bool init;
+public class STASYS_State {
+ public Vector3D sun_vector;
+ public Vector3D prev_sun_vector;
+ public Vector3D sun_normal;
+ public float cur_max_efficiency;
+ public float degrees_per_second;
+ public TimeSpan time_since_last_scan;
+ public TimeSpan time_since_last_rotation;
+ public TimeSpan darkness_timeout;
+}
 
 // state machine
 Action [] states = null;
 
 int current_state;
+STASYS_State state = new STASYS_State();
 
 public class STASYS_Group {
  enum State {
@@ -137,7 +139,7 @@ public class STASYS_Group {
   }
   // if we have high efficiency at the outself, do a fine search from the outset
   SearchType t;
-  if (getEfficiency() > 0.85) {
+  if (getEfficiency() > 0.80) {
    t = SearchType.Fine;
   } else {
    t = SearchType.Coarse;
@@ -233,6 +235,9 @@ public class STASYS_Group {
  public void setAlignment(Vector3D direction) {
   if (state != State.Idle && state != State.Align) {
    return;
+  }
+  if (direction == Vector3D.Zero) {
+   throw new Exception("Zero alignment vector");
   }
   state = State.Align;
   align(direction);
@@ -353,6 +358,10 @@ public class STASYS_Group {
    if (search_state.direction == SearchDirection.Lateral) {
     var new_rotor = grid_to_rotor[getFirstPanel()[0].CubeGrid];
     if (new_rotor != search_state.rotor) {
+     // if we're over 80, we don't need full scan
+     if (getEfficiency() > 0.80) {
+      search_state.type = SearchType.Fine;
+     }
      stopRotor(search_state.rotor);
      search_state.rotor = new_rotor;
      angle = normalizeAngle(getRotorAngle(search_state.rotor));
@@ -955,28 +964,29 @@ STASYS_Group updateFromGroup(List<IMyTerminalBlock> blocks, STASYS_Group g) {
  */
 
 void s_processStates() {
- if (time_since_last_rotation < darkness_timeout) {
+ if (state.time_since_last_rotation < state.darkness_timeout) {
   return;
  }
+ state.darkness_timeout = TimeSpan.Zero;
  bool scan = false;
- if (sun_normal != Vector3D.Zero && time_since_last_rotation > new TimeSpan(0, 0, 15)) {
-  var qt = Quaternion.CreateFromAxisAngle(sun_normal, MathHelper.ToRadians(degrees_per_second * 15f));
-  sun_vector = Vector3D.Transform(sun_vector, qt);
-  time_since_last_rotation = TimeSpan.Zero;
- } else if (!init ||
-            (sun_normal != Vector3D.Zero && time_since_last_scan > new TimeSpan(0, 6, 0)) ||
-            (sun_normal == Vector3D.Zero && time_since_last_scan > new TimeSpan(0, 1, 0))) {
-  time_since_last_scan = TimeSpan.Zero;
-  cur_max_efficiency = 0;
-  if (prev_sun_vector != Vector3D.Zero) {
-   sun_normal = Vector3D.Normalize(Vector3D.Cross(sun_vector, prev_sun_vector));
+ if (state.sun_normal != Vector3D.Zero && state.time_since_last_rotation > new TimeSpan(0, 0, 30)) {
+  var qt = Quaternion.CreateFromAxisAngle(state.sun_normal, MathHelper.ToRadians(state.degrees_per_second * 15f));
+  state.sun_vector = Vector3D.Transform(state.sun_vector, qt);
+  state.time_since_last_rotation = TimeSpan.Zero;
+ } else if ((state.sun_normal != Vector3D.Zero && state.time_since_last_scan > new TimeSpan(0, 6, 0)) ||
+            (state.sun_normal == Vector3D.Zero && state.time_since_last_scan > new TimeSpan(0, 0, 30))) {
+  if (state.prev_sun_vector != Vector3D.Zero && state.sun_vector != Vector3D.Zero && state.cur_max_efficiency > 0.90) {
+   state.sun_normal = Vector3D.Normalize(Vector3D.Cross(state.sun_vector, state.prev_sun_vector));
    // get angle between prev and cur sun vectors
-   var angle = getAngle(sun_normal, prev_sun_vector, sun_vector);
-   degrees_per_second = angle / 180f;
-   prev_sun_vector = Vector3D.Zero;
+   var angle = getAngle(state.sun_normal, state.prev_sun_vector, state.sun_vector);
+   state.degrees_per_second = angle / 30f;
+   state.prev_sun_vector = Vector3D.Zero;
+   state.time_since_last_scan = TimeSpan.Zero;
   } else {
-   prev_sun_vector = sun_vector;
+   state.prev_sun_vector = state.sun_vector;
+   state.sun_vector = Vector3D.Zero;
    scan = true;
+   state.cur_max_efficiency = 0;
   }
  }
  bool all_dark = true;
@@ -985,26 +995,31 @@ void s_processStates() {
   g.processState();
   if (scan == true) {
    g.findSun();
-   init = true;
+   all_dark = false;
   }
   var e = Math.Max(g.getSolarEfficiency(), g.getOxygenEfficiency());
   if (g.isIdle() && e > 0.05) {
    all_dark = false;
   }
-  if (g.foundSun()) {
+  if (g.scanningForSun()) {
+   all_dark = false;
+  } else if (g.foundSun()) {
+   state.time_since_last_scan = TimeSpan.Zero;
+   all_dark = false;
    var max_v = g.getCurVector();
    g.stopScan();
-   if (e > 0.10 && e > cur_max_efficiency) {
-    sun_vector = max_v;
-    cur_max_efficiency = e;
+   if (e > 0.05 && e > state.cur_max_efficiency) {
+    state.sun_vector = max_v;
+    state.cur_max_efficiency = e;
    }
-  } else if (sun_vector != Vector3D.Zero) {
-   g.setAlignment(sun_vector);
+  } else if (state.sun_vector != Vector3D.Zero) {
+   all_dark = false;
+   g.setAlignment(state.sun_vector);
   }
  }
  if (all_dark) {
-  time_since_last_rotation = TimeSpan.Zero;
-  darkness_timeout = new TimeSpan(0, 5, 0);
+  state.time_since_last_rotation = TimeSpan.Zero;
+  state.darkness_timeout = new TimeSpan(0, 5, 0);
  }
 }
 
@@ -1034,17 +1049,13 @@ void s_displayStats() {
 
  sb.AppendLine(String.Format("STASYS v{0}", VERSION));
  sb.AppendLine(String.Format("Groups under control: {0}", stasys_groups.Count));
- sb.Append("Oxygen farm efficiency: ");
  if (o_n > 0) {
-  sb.AppendLine(String.Format("{0:0.0}% ({1:0} L)", o_e * 100f, o_o));
- } else {
-  sb.AppendLine("N/A");
+  sb.AppendLine(String.Format("Oxygen farm efficiency: {0:0.0}%", o_e * 100f));
+  sb.AppendLine(String.Format("Oxygen farm output: {0:0}L", o_o));
  }
- sb.Append("Solar panel efficiency: ");
  if (s_n > 0) {
-  sb.AppendLine(String.Format("{0:0.0}% ({1}W)", s_e * 100f, getUnitStr(s_o)));
- } else {
-  sb.AppendLine("N/A");
+  sb.AppendLine(String.Format("Solar panel efficiency: {0:0.0}%", s_e * 100f));
+  sb.AppendLine(String.Format("Solar panel output: {0}W", getUnitStr(s_o)));
  }
  foreach (IMyTextPanel panel in local_text_panels) {
   panel.WritePublicTitle("STASYS Notification");
@@ -1080,7 +1091,11 @@ void s_refreshGroups() {
      g = new STASYS_Group();
      updateFromGroup(blocks, g);
      g.name = name;
-     g.reset();
+     if (state.sun_vector != Vector3D.Zero) {
+      g.setAlignment(state.sun_vector);
+     } else {
+      g.reset();
+     }
     }
     tmp_groups.Add(name, g);
    } catch (Exception e) {
@@ -1162,18 +1177,18 @@ public Program() {
  Me.SetCustomName("STASYS CPU");
  hideFromHud(Me);
  current_state = 0;
- sun_vector = new Vector3D();
- sun_normal = new Vector3D();
- cur_max_efficiency = 0f;
- time_since_last_scan = TimeSpan.Zero;
- time_since_last_rotation = TimeSpan.Zero;
  state_cycle_counts = new int[states.Length];
- init = false;
+ state.sun_vector = new Vector3D();
+ state.sun_normal = new Vector3D();
+ state.cur_max_efficiency = 0f;
+ state.time_since_last_scan = new TimeSpan(0, 1, 0);
+ state.time_since_last_rotation = new TimeSpan(0, 1, 0);
+ state.darkness_timeout = TimeSpan.Zero;
 }
 
 void Main() {
- time_since_last_scan += Runtime.TimeSinceLastRun;
- time_since_last_rotation += Runtime.TimeSinceLastRun;
+ state.time_since_last_scan += Runtime.TimeSinceLastRun;
+ state.time_since_last_rotation += Runtime.TimeSinceLastRun;
  Echo(String.Format("STASYS version {0}", VERSION));
  int num_states = 0;
  cycle_count = 0;

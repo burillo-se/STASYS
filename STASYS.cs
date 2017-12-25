@@ -43,6 +43,8 @@ namespace SpaceEngineers
 
         int current_state;
 
+        bool timer_mode = false;
+
         // tuples are banned, so...
         public struct TwoFloats
         {
@@ -2330,6 +2332,7 @@ namespace SpaceEngineers
 
         public Program()
         {
+            Runtime.UpdateFrequency = UpdateFrequency.Update100;
             states = new Action[] {
                 s_refreshGrids,
                 s_refreshGroups,
@@ -2345,12 +2348,23 @@ namespace SpaceEngineers
             cur_time = new TimeSpan();
         }
 
-        void Main()
+        void Main(string arg, UpdateType ut)
         {
             cur_time += Runtime.TimeSinceLastRun;
             Echo(String.Format("STASYS version {0}", VERSION));
             int num_states = 0;
             cycle_count = 0;
+
+            if (ut == UpdateType.Trigger)
+            {
+                timer_mode = true;
+                Runtime.UpdateFrequency = UpdateFrequency.None;
+            } else
+            {
+                timer_mode = false;
+                Runtime.UpdateFrequency = UpdateFrequency.Update100;
+            }
+
             do
             {
                 try

@@ -1659,10 +1659,10 @@ namespace SpaceEngineers
                 foreach (var p in grid_to_rotor)
                 {
                     var r = p.Value;
-                    var cur_angle = getRotorAngle(r);
-                    var u_limit = r.GetValueFloat("UpperLimit");
-                    var l_limit = r.GetValueFloat("LowerLimit");
-                    var vel = r.GetValueFloat("Velocity");
+                    var cur_angle = MathHelper.ToDegrees(r.Angle);
+                    var u_limit = r.UpperLimitDeg;
+                    var l_limit = r.LowerLimitDeg;
+                    var vel = r.TargetVelocityRPM;
                     var limit = vel > 0 ? u_limit : l_limit;
 
                     // if velocity is zero, someone stopped us
@@ -1707,7 +1707,7 @@ namespace SpaceEngineers
                     bool inverted = search_normal != normal;
 
                     var offset = getAngle(normal, getGridVector(p.Key), target);
-                    var cur_angle = getRotorAngle(r);
+                    var cur_angle = MathHelper.ToDegrees(r.Angle);
                     var target_angle = getTargetAngle(cur_angle, offset);
 
                     Echo(String.Format("target_angle: {0}", target_angle));
@@ -1772,28 +1772,16 @@ namespace SpaceEngineers
                 foreach (var p in grid_to_rotor)
                 {
                     var r = p.Value;
-                    var vel = r.GetValueFloat("Velocity");
+                    var vel = r.TargetVelocityRPM;
                     if (vel == 0)
                     {
                         continue;
                     }
                     var dir = vel > 0;
-                    var target = dir ? r.GetValueFloat("UpperLimit") : r.GetValueFloat("LowerLimit");
+                    var target = dir ? r.UpperLimitDeg : r.LowerLimitDeg;
                     var norm_target = (float)Math.Round(normalizeAngle(target, true), 0);
                     moveRotor(r, norm_target, true);
                 }
-            }
-
-            float getRotorAngle(IMyTerminalBlock b)
-            {
-                var angle_regex = new System.Text.RegularExpressions.Regex("([\\-]?\\d+)");
-                var cur_match = angle_regex.Match(b.DetailedInfo);
-                if (!cur_match.Success)
-                {
-                    return 0;
-                }
-                var val = float.Parse(cur_match.Groups[1].Value);
-                return val;
             }
 
             float normalizeAngle(float angle, bool correct = false)
@@ -1819,22 +1807,20 @@ namespace SpaceEngineers
                 {
                     throw new Exception("Unexpectedly big angle, something likely went wrong");
                 }
-                var cur_angle = getRotorAngle(rotor);
+                var cur_angle = MathHelper.ToDegrees(rotor.Angle);
                 bool right = target > cur_angle;
                 var offset = Math.Abs(cur_angle - target);
                 // slow speed is variable
                 float speed = fast ? 2f : getRotorSpeed(offset);
                 Echo("Rotation speed: " + speed.ToString());
-                rotor.SetValue("Velocity", right ? speed : -speed);
-                rotor.SetValue("UpperLimit", right ? target : cur_angle);
-                rotor.SetValue("LowerLimit", right ? cur_angle : target);
-                rotor.SetValue("Weld speed", 20f);
+                rotor.TargetVelocityRPM = right ? speed : -speed;
+                rotor.UpperLimitDeg = right ? target : cur_angle;
+                rotor.LowerLimitDeg = right ? cur_angle : target;
             }
 
             void stopRotor(IMyMotorStator rotor)
             {
-                rotor.SetValue("Velocity", 0f);
-                rotor.SetValue("Weld speed", 2f);
+                rotor.TargetVelocityRPM = 0;
             }
         }
 

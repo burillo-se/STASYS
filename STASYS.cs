@@ -476,7 +476,7 @@ namespace SpaceEngineers
                 var sg = new STASYS_Group(name);
 
                 Dictionary<IMyCubeGrid, List<IMyTerminalBlock>> panels;
-                Dictionary<IMyCubeGrid, IMyMotorBase> grid_to_rotor;
+                Dictionary<IMyCubeGrid, IMyMotorStator> grid_to_rotor;
 
                 processBlocks(blocks, out panels, out grid_to_rotor);
 
@@ -496,7 +496,7 @@ namespace SpaceEngineers
                 }
 
                 Dictionary<IMyCubeGrid, List<IMyTerminalBlock>> panels;
-                Dictionary<IMyCubeGrid, IMyMotorBase> grid_to_rotor;
+                Dictionary<IMyCubeGrid, IMyMotorStator> grid_to_rotor;
 
                 processBlocks(blocks, out panels, out grid_to_rotor);
 
@@ -510,17 +510,17 @@ namespace SpaceEngineers
 
             void processBlocks(List<IMyTerminalBlock> src_blocks,
                 out Dictionary<IMyCubeGrid, List<IMyTerminalBlock>> panels,
-                out Dictionary<IMyCubeGrid, IMyMotorBase> grid_to_rotor)
+                out Dictionary<IMyCubeGrid, IMyMotorStator> grid_to_rotor)
             {
                 panels = new Dictionary<IMyCubeGrid, List<IMyTerminalBlock>>();
-                grid_to_rotor = new Dictionary<IMyCubeGrid, IMyMotorBase>();
+                grid_to_rotor = new Dictionary<IMyCubeGrid, IMyMotorStator>();
 
                 // pass 1: collect all grids and rotors
                 foreach (var b in src_blocks)
                 {
-                    if (b is IMyMotorBase)
+                    if (b is IMyMotorStator)
                     {
-                        var rotor = b as IMyMotorBase;
+                        var rotor = b as IMyMotorStator;
                         grid_to_rotor.Add(rotor.TopGrid, rotor);
                     }
                     else if (b is IMyOxygenFarm || b is IMySolarPanel)
@@ -545,7 +545,7 @@ namespace SpaceEngineers
 
                 // pass 2: check if there is more than one base rotor
                 int n_base = 0;
-                IMyMotorBase base_rotor = null;
+                IMyMotorStator base_rotor = null;
                 var to_remove = new List<IMyCubeGrid>();
                 foreach (var p in grid_to_rotor)
                 {
@@ -786,7 +786,7 @@ namespace SpaceEngineers
                 Move
             }
             Dictionary<IMyCubeGrid, List<IMyTerminalBlock>> panels;
-            Dictionary<IMyCubeGrid, IMyMotorBase> grid_to_rotor;
+            Dictionary<IMyCubeGrid, IMyMotorStator> grid_to_rotor;
             bool large_grid;
             SearchType search_type;
             State cur_state;
@@ -796,7 +796,7 @@ namespace SpaceEngineers
             {
                 this.name = name;
                 panels = new Dictionary<IMyCubeGrid, List<IMyTerminalBlock>>();
-                grid_to_rotor = new Dictionary<IMyCubeGrid, IMyMotorBase>();
+                grid_to_rotor = new Dictionary<IMyCubeGrid, IMyMotorStator>();
                 cur_state = State.Idle;
                 search_type = SearchType.Coarse;
                 axis = new List<STASYS_Axis>();
@@ -821,7 +821,7 @@ namespace SpaceEngineers
             }
 
             public void update(Dictionary<IMyCubeGrid, List<IMyTerminalBlock>> new_panels,
-                Dictionary<IMyCubeGrid, IMyMotorBase> new_grid_to_rotor, Action<string> echofunc)
+                Dictionary<IMyCubeGrid, IMyMotorStator> new_grid_to_rotor, Action<string> echofunc)
             {
                 axis.Clear();
                 panels = new_panels;
@@ -829,7 +829,7 @@ namespace SpaceEngineers
                 this.MyEcho = echofunc;
 
                 // get our base rotor
-                IMyMotorBase base_rotor = null;
+                IMyMotorStator base_rotor = null;
                 foreach (var p in grid_to_rotor)
                 {
                     var r = p.Value;
@@ -844,7 +844,7 @@ namespace SpaceEngineers
                 if (base_rotor != null)
                 {
                     var lateral_axis_panels = new Dictionary<IMyCubeGrid, List<IMyTerminalBlock>>();
-                    var lateral_grid_to_rotor = new Dictionary<IMyCubeGrid, IMyMotorBase>();
+                    var lateral_grid_to_rotor = new Dictionary<IMyCubeGrid, IMyMotorStator>();
 
                     foreach (var p in panels)
                     {
@@ -859,7 +859,7 @@ namespace SpaceEngineers
 
                 // step 2: assign all grids to their respective rotors, excluding base rotor grids
                 var vertical_axis_panels = new Dictionary<IMyCubeGrid, List<IMyTerminalBlock>>();
-                var vertical_grid_to_rotor = new Dictionary<IMyCubeGrid, IMyMotorBase>();
+                var vertical_grid_to_rotor = new Dictionary<IMyCubeGrid, IMyMotorStator>();
 
                 foreach (var p in panels)
                 {
@@ -1228,11 +1228,11 @@ namespace SpaceEngineers
             bool large_grid;
             bool base_axis;
             Dictionary<IMyCubeGrid, List<IMyTerminalBlock>> panels;
-            Dictionary<IMyCubeGrid, IMyMotorBase> grid_to_rotor;
+            Dictionary<IMyCubeGrid, IMyMotorStator> grid_to_rotor;
             string name;
 
             public STASYS_Axis(Dictionary<IMyCubeGrid, List<IMyTerminalBlock>> panels_in,
-                Dictionary<IMyCubeGrid, IMyMotorBase> grid_to_rotor_in, Vector3D default_center,
+                Dictionary<IMyCubeGrid, IMyMotorStator> grid_to_rotor_in, Vector3D default_center,
                 string name, Action<string> echofunc, bool base_axis = false)
             {
                 panels = panels_in;
@@ -1813,7 +1813,7 @@ namespace SpaceEngineers
                 return angle;
             }
 
-            void moveRotor(IMyMotorBase rotor, float target, bool fast)
+            void moveRotor(IMyMotorStator rotor, float target, bool fast)
             {
                 if (target > 360 || target < -360)
                 {
@@ -1831,7 +1831,7 @@ namespace SpaceEngineers
                 rotor.SetValue("Weld speed", 20f);
             }
 
-            void stopRotor(IMyMotorBase rotor)
+            void stopRotor(IMyMotorStator rotor)
             {
                 rotor.SetValue("Velocity", 0f);
                 rotor.SetValue("Weld speed", 2f);
@@ -2042,7 +2042,7 @@ namespace SpaceEngineers
             return o.CubeGrid;
         }
 
-        IMyCubeGrid getConnectedGrid(IMyMotorBase r)
+        IMyCubeGrid getConnectedGrid(IMyMotorStator r)
         {
             if (!r.IsAttached)
             {
@@ -2085,7 +2085,7 @@ namespace SpaceEngineers
                 {
                     pistons.Add(b);
                 }
-                else if (b is IMyMotorBase)
+                else if (b is IMyMotorStator)
                 {
                     rotors.Add(b);
                 }
@@ -2107,7 +2107,7 @@ namespace SpaceEngineers
             }
 
             // do the same for rotors
-            foreach (IMyMotorBase rotor in rotors)
+            foreach (IMyMotorStator rotor in rotors)
             {
                 var connected_grid = getConnectedGrid(rotor);
 

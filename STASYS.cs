@@ -91,6 +91,7 @@ namespace SpaceEngineers
             }
         }
 
+        /* this is high level control class - it follows the sun but doesn't know anything about how it does it */
         public class STASYS_Control
         {
             Action<string> MyEcho;
@@ -450,6 +451,7 @@ namespace SpaceEngineers
             }
         }
 
+        /* this manages solar panel groups - creates, parses, etc. and tells them what to do */
         public class STASYS_Group_Manager
         {
             Dictionary<string, STASYS_Group> groups;

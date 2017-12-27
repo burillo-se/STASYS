@@ -269,7 +269,7 @@ namespace SpaceEngineers
                 var cross = Vector3D.Normalize(Vector3D.Cross(src_proj, dst_proj));
                 var cross_dot = Vector3D.Dot(normal, cross);
                 var rad = (float)Math.Acos(dot);
-                var deg = (float)Math.Round(MathHelper.ToDegrees(rad), 2);
+                var deg = (float)Math.Round(MathHelper.ToDegrees(rad), 1);
                 var result = dot < 0 ? -(180 - deg) : deg;
                 result = cross_dot > 0 ? result : -result;
                 return result;
@@ -1633,7 +1633,7 @@ namespace SpaceEngineers
                 var cross = Vector3D.Normalize(Vector3D.Cross(src_proj, dst_proj));
                 var cross_dot = Vector3D.Dot(rotor_normal, cross);
                 var rad = (float)Math.Acos(dot);
-                var deg = (float)Math.Round(MathHelper.ToDegrees(rad), 2);
+                var deg = (float)Math.Round(MathHelper.ToDegrees(rad), 1);
                 var result = deg;
                 // if this rotor needs full range (base rotor of a multi-rotor panel), then leave
                 // the angle alone, as it's correct; otherwise, truncate it to sharp angle
@@ -1661,9 +1661,9 @@ namespace SpaceEngineers
                 foreach (var p in grid_to_rotor)
                 {
                     var r = p.Value;
-                    var cur_angle = MathHelper.ToDegrees(r.Angle);
-                    var u_limit = r.UpperLimitDeg;
-                    var l_limit = r.LowerLimitDeg;
+                    var cur_angle = Math.Round(normalizeAngle(MathHelper.ToDegrees(r.Angle)), 1);
+                    var u_limit = isInfinite(r.UpperLimitDeg) ? 0 : Math.Round(normalizeAngle(r.UpperLimitDeg), 1);
+                    var l_limit = isInfinite(r.LowerLimitDeg) ? 0 : Math.Round(normalizeAngle(r.LowerLimitDeg), 1);
                     var vel = r.TargetVelocityRPM;
                     var limit = vel > 0 ? u_limit : l_limit;
 
@@ -1681,7 +1681,7 @@ namespace SpaceEngineers
             // keep target angle within first 180 degrees
             float getTargetAngle(float cur, float offset)
             {
-                var res = cur - normalizeAngle(offset);
+                var res = normalizeAngle(cur - offset);
                 Echo(String.Format("cur: {0} offset: {1} target: {2}", cur, offset, res));
                 return res;
             }
@@ -1709,15 +1709,10 @@ namespace SpaceEngineers
                     bool inverted = search_normal != normal;
 
                     var offset = getAngle(normal, getGridVector(p.Key), target);
-                    var cur_angle = MathHelper.ToDegrees(r.Angle);
+                    var cur_angle = (float) Math.Round(MathHelper.ToDegrees(r.Angle), 1);
                     var target_angle = getTargetAngle(cur_angle, offset);
 
                     Echo(String.Format("target_angle: {0}", target_angle));
-
-                    if (Math.Abs(cur_angle - target_angle) >= 180)
-                    {
-                        throw new Exception(String.Format("Difference too big: {0:0} {1:0} {2:0}", cur_angle, target_angle, Math.Abs(cur_angle - target_angle)));
-                    }
 
                     var dir = cur_angle < target_angle;
                     if (search_dir == null)
@@ -1780,10 +1775,15 @@ namespace SpaceEngineers
                         continue;
                     }
                     var dir = vel > 0;
-                    var target = dir ? r.UpperLimitDeg : r.LowerLimitDeg;
-                    var norm_target = (float)Math.Round(normalizeAngle(target, true), 0);
+                    var target = (float) Math.Round(dir ? r.UpperLimitDeg : r.LowerLimitDeg, 1);
+                    var norm_target = normalizeAngle(target, true);
                     moveRotor(r, norm_target, true);
                 }
+            }
+
+            bool isInfinite(float angle)
+            {
+                return angle == float.MaxValue;
             }
 
             float normalizeAngle(float angle, bool correct = false)
@@ -1792,6 +1792,10 @@ namespace SpaceEngineers
                     base_axis ? 360 : 180
                     : 180;
                 float half = limit / 2;
+                if (angle == float.MaxValue)
+                {
+                    throw new Exception("Attempting to normalize infinite angle");
+                }
                 while (angle >= half)
                 {
                     angle -= limit;
@@ -1805,19 +1809,21 @@ namespace SpaceEngineers
 
             void moveRotor(IMyMotorStator rotor, float target, bool fast)
             {
-                if (target > 360 || target < -360)
+                if (target >= 360 || target <= -360)
                 {
                     throw new Exception("Unexpectedly big angle, something likely went wrong");
                 }
-                var cur_angle = MathHelper.ToDegrees(rotor.Angle);
+                var cur_angle = (float) Math.Round(MathHelper.ToDegrees(rotor.Angle), 1);
                 bool right = target > cur_angle;
                 var offset = Math.Abs(cur_angle - target);
                 // slow speed is variable
                 float speed = fast ? 2f : getRotorSpeed(offset);
-                Echo("Rotation speed: " + speed.ToString());
-                rotor.TargetVelocityRPM = right ? speed : -speed;
-                rotor.UpperLimitDeg = right ? target : cur_angle;
-                rotor.LowerLimitDeg = right ? cur_angle : target;
+                float u_limit = right ? target : float.MaxValue;
+                float l_limit = right ? float.MaxValue : target;
+                speed = right? speed : -speed;
+                rotor.TargetVelocityRPM = speed;
+                rotor.UpperLimitDeg = u_limit;
+                rotor.LowerLimitDeg = l_limit;
             }
 
             void stopRotor(IMyMotorStator rotor)

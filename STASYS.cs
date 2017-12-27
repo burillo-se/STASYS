@@ -1681,7 +1681,7 @@ namespace SpaceEngineers
             // keep target angle within first 180 degrees
             float getTargetAngle(float cur, float offset)
             {
-                var res = normalizeAngle(cur - offset);
+                var res = cur - normalizeAngle(offset);
                 Echo(String.Format("cur: {0} offset: {1} target: {2}", cur, offset, res));
                 return res;
             }
@@ -1760,6 +1760,15 @@ namespace SpaceEngineers
                 }
             }
 
+            void dumpRotorData(IMyMotorStator rotor)
+            {
+                Echo(String.Format("Rotor name: {0}", rotor.CustomName));
+                Echo(String.Format("Current angle: {0:0.0}", MathHelper.ToDegrees(rotor.Angle)));
+                Echo(String.Format("Upper limit: {0}", isInfinite(rotor.UpperLimitDeg) ? "infinite" : String.Format("{0:0.0}", rotor.UpperLimitDeg)));
+                Echo(String.Format("Lower limit: {0}", isInfinite(rotor.LowerLimitDeg) ? "infinite" : String.Format("{0:0.0}", rotor.LowerLimitDeg)));
+                Echo(String.Format("RPM: {0:0.0}", rotor.TargetVelocityRPM));
+            }
+
             // go through each rotor and make sure the end angle is in sane range
             // this prevents panels going overboard with huge current angles
             // we only do this in move state, so there's no interference with
@@ -1783,7 +1792,7 @@ namespace SpaceEngineers
 
             bool isInfinite(float angle)
             {
-                return angle == float.MaxValue;
+                return angle == float.MaxValue || angle == float.MinValue;
             }
 
             float normalizeAngle(float angle, bool correct = false)
@@ -1792,7 +1801,7 @@ namespace SpaceEngineers
                     base_axis ? 360 : 180
                     : 180;
                 float half = limit / 2;
-                if (angle == float.MaxValue)
+                if (angle == float.MaxValue || angle == float.MaxValue)
                 {
                     throw new Exception("Attempting to normalize infinite angle");
                 }
@@ -1819,8 +1828,8 @@ namespace SpaceEngineers
                 // slow speed is variable
                 float speed = fast ? 2f : getRotorSpeed(offset);
                 float u_limit = right ? target : float.MaxValue;
-                float l_limit = right ? float.MaxValue : target;
-                speed = right? speed : -speed;
+                float l_limit = right ? float.MinValue : target;
+                speed = right ? speed : -speed;
                 rotor.TargetVelocityRPM = speed;
                 rotor.UpperLimitDeg = u_limit;
                 rotor.LowerLimitDeg = l_limit;

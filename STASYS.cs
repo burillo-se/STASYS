@@ -1523,7 +1523,7 @@ namespace SpaceEngineers
 
             float getRotorSpeed(float range)
             {
-                var deg_per_s = range / 17; // expect 17 seconds for any range, smaller ranges will be slower
+                var deg_per_s = range / 6; // expect 6 seconds for any range, smaller ranges will be slower
                 var deg_per_m = deg_per_s * 60;
                 return deg_per_m / 360;
             }
